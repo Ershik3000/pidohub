@@ -1,0 +1,1838 @@
+-- PidofillHub.lua
+-- ИСПРАВЛЕН NOCLIP: постоянная проверка, работает без отключения
+
+local PidofillHub = {}
+
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local TextService = game:GetService("TextService")
+local RunService = game:GetService("RunService")
+
+local ANIMATION_SPEED = 0.2
+local TWEEN_STYLE = Enum.EasingStyle.Quad
+local TWEEN_DIR = Enum.EasingDirection.Out
+
+local Sections = {
+    "Visual",
+    "Mics",
+    "Animation",
+    "Tools",
+    "SkinChanger",
+    "Settings"
+}
+
+local Settings = {
+    AccentColor = Color3.fromRGB(120, 80, 200),
+    AccentHoverColor = Color3.fromRGB(144, 96, 240)
+}
+
+-- ESP
+local ESPEnabled = false
+local ESPColor = Color3.fromRGB(120, 80, 200)
+local UseAccentColor = true
+local ESPHighlights = {}
+local ESPConnections = {}
+local ESPPlayerConnections = {}
+
+-- Fly/NoClip
+local FlyEnabled = false
+local FlySpeed = 50
+local NoClipEnabled = false
+local FlyConnection = nil
+local FlyBodyVelocity = nil
+local FlyBodyGyro = nil
+local FlyOriginalGravity = nil
+local FlyCharacter = nil
+local NoClipLoop = nil
+
+local ScreenGui
+local MainFrame
+local LeftPanel
+local RightPanel
+local TabButtons = {}
+local CurrentTab = ""
+local IsMinimized = false
+local OriginalSize = UDim2.new(0, 800, 0, 500)
+local OriginalPosition = UDim2.new(0.5, -400, 0.5, -250)
+local IsClosing = false
+local IsUnloading = false
+
+-- Jerk Off
+local JerkOffActive = false
+local JerkOffCoroutine = nil
+local JerkOffTool = nil
+local JerkOffStoppedTracks = {}
+local JerkOffHumanoid = nil
+
+local Connections = {}
+local RenderConnections = {}
+
+local function AddConnection(conn)
+    table.insert(Connections, conn)
+    return conn
+end
+
+local function AddRenderConnection(conn)
+    table.insert(RenderConnections, conn)
+    return conn
+end
+
+local function UpdateAccentColors()
+    for section, btn in pairs(TabButtons) do
+        if btn and btn.Parent then
+            if CurrentTab == section then
+                TweenService:Create(btn, TweenInfo.new(ANIMATION_SPEED, TWEEN_STYLE, TWEEN_DIR), {BackgroundColor3 = Settings.AccentColor}):Play()
+            end
+        end
+    end
+    if UseAccentColor and ESPEnabled then
+        ESPColor = Settings.AccentColor
+        UpdateESPColor()
+    end
+end
+
+local function ShowNotification(text)
+    if not ScreenGui then return end
+    local textBounds = TextService:GetTextSize(text, 14, Enum.Font.GothamMedium, Vector2.new(500, 100))
+    local textWidth = math.max(200, textBounds.X + 40)
+    local textHeight = math.max(40, textBounds.Y + 20)
+    
+    local notificationFrame = Instance.new("Frame")
+    notificationFrame.Size = UDim2.new(0, textWidth, 0, textHeight)
+    notificationFrame.Position = UDim2.new(1, -(textWidth + 20), 1, -(textHeight + 20))
+    notificationFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    notificationFrame.BackgroundTransparency = 0
+    notificationFrame.BorderSizePixel = 0
+    notificationFrame.Parent = ScreenGui
+    
+    local notifCorner = Instance.new("UICorner")
+    notifCorner.CornerRadius = UDim.new(0, 8)
+    notifCorner.Parent = notificationFrame
+    
+    local notifText = Instance.new("TextLabel")
+    notifText.Size = UDim2.new(1, -20, 1, 0)
+    notifText.Position = UDim2.new(0, 10, 0, 0)
+    notifText.BackgroundTransparency = 1
+    notifText.Text = text
+    notifText.TextColor3 = Color3.fromRGB(200, 220, 255)
+    notifText.TextSize = 14
+    notifText.Font = Enum.Font.GothamMedium
+    notifText.TextWrapped = true
+    notifText.TextYAlignment = Enum.TextYAlignment.Center
+    notifText.Parent = notificationFrame
+    
+    notificationFrame.BackgroundTransparency = 1
+    TweenService:Create(notificationFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundTransparency = 0}):Play()
+    
+    task.wait(3)
+    
+    if notificationFrame and notificationFrame.Parent then
+        TweenService:Create(notificationFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {BackgroundTransparency = 1}):Play()
+        task.wait(0.3)
+        notificationFrame:Destroy()
+    end
+end
+
+-- ============ FLY ============
+local function StartFly()
+    if FlyEnabled then return end
+    FlyEnabled = true
+    
+    local character = LocalPlayer.Character
+    if not character then return end
+    FlyCharacter = character
+    
+    local humanoid = character:FindFirstChildWhichIsA("Humanoid")
+    if not humanoid then return end
+    
+    FlyOriginalGravity = workspace.Gravity
+    workspace.Gravity = 0
+    
+    humanoid.PlatformStand = true
+    
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return end
+    
+    FlyBodyVelocity = Instance.new("BodyVelocity")
+    FlyBodyVelocity.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+    FlyBodyVelocity.Parent = rootPart
+    
+    FlyBodyGyro = Instance.new("BodyGyro")
+    FlyBodyGyro.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+    FlyBodyGyro.CFrame = rootPart.CFrame
+    FlyBodyGyro.Parent = rootPart
+    
+    FlyConnection = AddRenderConnection(RunService.RenderStepped:Connect(function()
+        if not FlyEnabled or not FlyCharacter or not FlyCharacter.Parent then
+            StopFly()
+            return
+        end
+        
+        local camera = workspace.CurrentCamera
+        if not camera then return end
+        
+        local moveDirection = Vector3.new()
+        local forward = camera.CFrame.LookVector
+        local right = camera.CFrame.RightVector
+        local up = camera.CFrame.UpVector
+        
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+            moveDirection = moveDirection + forward
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+            moveDirection = moveDirection - forward
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+            moveDirection = moveDirection - right
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+            moveDirection = moveDirection + right
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+            moveDirection = moveDirection + up
+        end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+            moveDirection = moveDirection - up
+        end
+        
+        if moveDirection.Magnitude > 0 then
+            moveDirection = moveDirection.Unit * FlySpeed
+        end
+        
+        if FlyBodyVelocity then
+            FlyBodyVelocity.Velocity = moveDirection
+        end
+        
+        local root = FlyCharacter:FindFirstChild("HumanoidRootPart")
+        if root and FlyBodyGyro then
+            if moveDirection.Magnitude > 0.5 then
+                FlyBodyGyro.CFrame = CFrame.lookAt(root.Position, root.Position + moveDirection.Unit)
+            else
+                FlyBodyGyro.CFrame = camera.CFrame
+            end
+        end
+    end))
+    
+    ShowNotification("Fly enabled")
+end
+
+local function StopFly()
+    if not FlyEnabled then return end
+    FlyEnabled = false
+    
+    if FlyConnection then
+        FlyConnection:Disconnect()
+        FlyConnection = nil
+    end
+    
+    if FlyCharacter then
+        local rootPart = FlyCharacter:FindFirstChild("HumanoidRootPart")
+        if rootPart then
+            if FlyBodyVelocity then
+                FlyBodyVelocity:Destroy()
+                FlyBodyVelocity = nil
+            end
+            if FlyBodyGyro then
+                FlyBodyGyro:Destroy()
+                FlyBodyGyro = nil
+            end
+        end
+        
+        local humanoid = FlyCharacter:FindFirstChildWhichIsA("Humanoid")
+        if humanoid then
+            humanoid.PlatformStand = false
+        end
+        
+        FlyCharacter = nil
+    end
+    
+    if FlyOriginalGravity then
+        workspace.Gravity = FlyOriginalGravity
+        FlyOriginalGravity = nil
+    end
+    
+    ShowNotification("Fly disabled")
+end
+
+-- ============ NOCLIP (ПОСТОЯННАЯ РАБОТА) ============
+local function ApplyNoClipToCharacter(character)
+    if not character then return end
+    
+    for _, part in pairs(character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+        end
+    end
+end
+
+local function StartNoClip()
+    if NoClipEnabled then return end
+    NoClipEnabled = true
+    
+    local character = LocalPlayer.Character
+    if character then
+        ApplyNoClipToCharacter(character)
+    end
+    
+    -- ПОСТОЯННЫЙ ЦИКЛ ПРОВЕРКИ - работает каждые 0.1 секунды
+    NoClipLoop = AddRenderConnection(RunService.Heartbeat:Connect(function()
+        if not NoClipEnabled then return end
+        
+        local char = LocalPlayer.Character
+        if not char then return end
+        
+        -- Проверяем все части тела каждые несколько тиков (для производительности)
+        for _, part in pairs(char:GetDescendants()) do
+            if part:IsA("BasePart") and part.CanCollide == true then
+                part.CanCollide = false
+            end
+        end
+    end))
+    
+    -- Отслеживаем новые части
+    local function onCharacterAdded(newChar)
+        if NoClipEnabled then
+            task.wait(0.1)
+            ApplyNoClipToCharacter(newChar)
+        end
+    end
+    
+    local charConn = AddConnection(LocalPlayer.CharacterAdded:Connect(onCharacterAdded))
+    table.insert(RenderConnections, charConn)
+    
+    ShowNotification("NoClip enabled")
+end
+
+local function StopNoClip()
+    if not NoClipEnabled then return end
+    NoClipEnabled = false
+    
+    if NoClipLoop then
+        NoClipLoop:Disconnect()
+        NoClipLoop = nil
+    end
+    
+    local character = LocalPlayer.Character
+    if character then
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = true
+            end
+        end
+    end
+    
+    ShowNotification("NoClip disabled")
+end
+
+-- ============ ESP ============
+local function CreateESPForPlayer(player)
+    if player == LocalPlayer then return end
+    if not ESPEnabled then return end
+    
+    local character = player.Character
+    if not character then return end
+    
+    local existing = character:FindFirstChild("ESP_Highlight")
+    if existing then return end
+    
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "ESP_Highlight"
+    highlight.FillColor = ESPColor
+    highlight.FillTransparency = 0.5
+    highlight.OutlineColor = ESPColor
+    highlight.OutlineTransparency = 0.2
+    highlight.Adornee = character
+    highlight.Parent = character
+    
+    table.insert(ESPHighlights, highlight)
+end
+
+local function EnableESP()
+    if ESPEnabled then return end
+    ESPEnabled = true
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            task.wait(0.05)
+            CreateESPForPlayer(player)
+        end
+    end
+    
+    local playerConn = Players.PlayerAdded:Connect(function(player)
+        if player ~= LocalPlayer and ESPEnabled then
+            local charConn = player.CharacterAdded:Connect(function(character)
+                task.wait(0.3)
+                if ESPEnabled and character then
+                    CreateESPForPlayer(player)
+                end
+            end)
+            table.insert(ESPPlayerConnections, {Player = player, Connection = charConn})
+            
+            task.wait(0.3)
+            if ESPEnabled then
+                CreateESPForPlayer(player)
+            end
+        end
+    end)
+    table.insert(ESPConnections, playerConn)
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local charConn = player.CharacterAdded:Connect(function(character)
+                task.wait(0.3)
+                if ESPEnabled and character then
+                    CreateESPForPlayer(player)
+                end
+            end)
+            table.insert(ESPPlayerConnections, {Player = player, Connection = charConn})
+        end
+    end
+    
+    ShowNotification("ESP enabled")
+end
+
+local function DisableESP()
+    if not ESPEnabled then return end
+    ESPEnabled = false
+    
+    for _, conn in ipairs(ESPConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    ESPConnections = {}
+    
+    for _, data in ipairs(ESPPlayerConnections) do
+        pcall(function() data.Connection:Disconnect() end)
+    end
+    ESPPlayerConnections = {}
+    
+    for _, highlight in ipairs(ESPHighlights) do
+        pcall(function() highlight:Destroy() end)
+    end
+    ESPHighlights = {}
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local character = player.Character
+            if character then
+                local highlight = character:FindFirstChild("ESP_Highlight")
+                if highlight then
+                    highlight:Destroy()
+                end
+            end
+        end
+    end
+    
+    ShowNotification("ESP disabled")
+end
+
+local function UpdateESPColor()
+    for _, highlight in ipairs(ESPHighlights) do
+        if highlight and highlight.Parent then
+            highlight.FillColor = ESPColor
+            highlight.OutlineColor = ESPColor
+        end
+    end
+end
+
+-- ============ JERK OFF ============
+local function StopAllHumanoidAnimations(humanoid)
+    if not humanoid then return end
+    
+    JerkOffStoppedTracks = {}
+    
+    local animTracks = humanoid:GetPlayingAnimationTracks()
+    for _, track in pairs(animTracks) do
+        if track and track.IsPlaying then
+            table.insert(JerkOffStoppedTracks, {
+                Animation = track.Animation,
+                TimePosition = track.TimePosition,
+                Speed = track.Speed
+            })
+            track:Stop()
+        end
+    end
+    
+    local character = humanoid.Parent
+    if character then
+        for _, child in pairs(character:GetDescendants()) do
+            if child:IsA("Animator") then
+                local animatorTracks = child:GetPlayingAnimationTracks()
+                for _, track in pairs(animatorTracks) do
+                    if track and track.IsPlaying then
+                        table.insert(JerkOffStoppedTracks, {
+                            Animation = track.Animation,
+                            TimePosition = track.TimePosition,
+                            Speed = track.Speed,
+                            Animator = child
+                        })
+                        track:Stop()
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function RestoreAllHumanoidAnimations(humanoid)
+    if not humanoid then return end
+    
+    for _, data in ipairs(JerkOffStoppedTracks) do
+        if data.Animation and data.Animation.AnimationId then
+            local target = data.Animator or humanoid
+            local newTrack = target:LoadAnimation(data.Animation)
+            if newTrack then
+                newTrack:Play()
+                newTrack:AdjustSpeed(data.Speed or 1)
+                if data.TimePosition then
+                    newTrack.TimePosition = data.TimePosition
+                end
+            end
+        end
+    end
+    
+    JerkOffStoppedTracks = {}
+end
+
+local function JerkOffFunction()
+    local speaker = LocalPlayer
+    if not speaker then return end
+    
+    local character = speaker.Character
+    if not character then return end
+    
+    local humanoid = character:FindFirstChildWhichIsA("Humanoid")
+    local backpack = speaker:FindFirstChildWhichIsA("Backpack")
+    if not humanoid or not backpack then return end
+    
+    JerkOffHumanoid = humanoid
+    
+    StopAllHumanoidAnimations(humanoid)
+    
+    local function isR15()
+        return humanoid.RigType == Enum.HumanoidRigType.R15
+    end
+    
+    local existingTool = backpack:FindFirstChild("Jerk Off")
+    if existingTool then
+        existingTool:Destroy()
+    end
+    
+    JerkOffTool = Instance.new("Tool")
+    JerkOffTool.Name = "Jerk Off"
+    JerkOffTool.ToolTip = "in the stripped club. straight up jorking it. and by it, haha, well. let's just say. My peanits."
+    JerkOffTool.RequiresHandle = false
+    JerkOffTool.Parent = backpack
+    
+    local jorkin = false
+    local track = nil
+    
+    local function stopTomfoolery()
+        jorkin = false
+        if track then
+            track:Stop()
+            track = nil
+        end
+    end
+    
+    JerkOffTool.Equipped:Connect(function() jorkin = true end)
+    JerkOffTool.Unequipped:Connect(stopTomfoolery)
+    humanoid.Died:Connect(stopTomfoolery)
+    
+    while JerkOffActive and JerkOffTool and JerkOffTool.Parent do
+        if not jorkin then 
+            task.wait()
+        else
+            local isR15Flag = isR15()
+            if not track then
+                local anim = Instance.new("Animation")
+                anim.AnimationId = not isR15Flag and "rbxassetid://72042024" or "rbxassetid://698251653"
+                track = humanoid:LoadAnimation(anim)
+                if not track then
+                    task.wait(0.1)
+                else
+                    track:Play()
+                    track:AdjustSpeed(isR15Flag and 0.7 or 0.65)
+                    track.TimePosition = 0.6
+                    task.wait(0.1)
+                    
+                    local targetTime = not isR15Flag and 0.65 or 0.7
+                    while track and track.TimePosition < targetTime and JerkOffActive do 
+                        task.wait(0.1) 
+                    end
+                    
+                    if track and JerkOffActive then
+                        track:Stop()
+                        track = nil
+                    end
+                    task.wait()
+                end
+            else
+                task.wait()
+            end
+        end
+    end
+    
+    if JerkOffHumanoid then
+        RestoreAllHumanoidAnimations(JerkOffHumanoid)
+        JerkOffHumanoid = nil
+    end
+    
+    if JerkOffTool then
+        local character = speaker.Character
+        if character then
+            local toolInHand = character:FindFirstChildWhichIsA("Tool")
+            if toolInHand and toolInHand == JerkOffTool then
+                toolInHand.Parent = backpack
+            end
+        end
+        JerkOffTool:Destroy()
+        JerkOffTool = nil
+    end
+end
+
+local function StopJerkOff()
+    if JerkOffActive then
+        JerkOffActive = false
+        
+        if JerkOffCoroutine then
+            task.cancel(JerkOffCoroutine)
+            JerkOffCoroutine = nil
+        end
+        
+        if JerkOffHumanoid then
+            RestoreAllHumanoidAnimations(JerkOffHumanoid)
+            JerkOffHumanoid = nil
+        end
+        
+        local backpack = LocalPlayer:FindFirstChildWhichIsA("Backpack")
+        local character = LocalPlayer.Character
+        if character and JerkOffTool then
+            local toolInHand = character:FindFirstChildWhichIsA("Tool")
+            if toolInHand and toolInHand == JerkOffTool and backpack then
+                toolInHand.Parent = backpack
+            end
+        end
+        
+        if JerkOffTool then
+            JerkOffTool:Destroy()
+            JerkOffTool = nil
+        end
+        
+        ShowNotification("Jerk Off stopped")
+    end
+end
+
+-- ============ UI ============
+local function CreateToggleSwitch(parent, x, y, label, isOn, onChange)
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(0, 180, 0, 40)
+    container.Position = UDim2.new(0, x, 0, y)
+    container.BackgroundTransparency = 1
+    container.Parent = parent
+    
+    local labelText = Instance.new("TextLabel")
+    labelText.Size = UDim2.new(0.5, 0, 1, 0)
+    labelText.Position = UDim2.new(0, 0, 0, 0)
+    labelText.BackgroundTransparency = 1
+    labelText.Text = label
+    labelText.TextColor3 = Color3.fromRGB(200, 200, 220)
+    labelText.TextSize = 15
+    labelText.Font = Enum.Font.GothamMedium
+    labelText.TextXAlignment = Enum.TextXAlignment.Left
+    labelText.Parent = container
+    
+    local switchBg = Instance.new("Frame")
+    switchBg.Size = UDim2.new(0, 44, 0, 24)
+    switchBg.Position = UDim2.new(0.6, 0, 0.5, -12)
+    switchBg.BackgroundColor3 = isOn and Settings.AccentColor or Color3.fromRGB(60, 60, 70)
+    switchBg.BackgroundTransparency = 0
+    switchBg.BorderSizePixel = 0
+    switchBg.Parent = container
+    
+    local switchCorner = Instance.new("UICorner")
+    switchCorner.CornerRadius = UDim.new(1, 0)
+    switchCorner.Parent = switchBg
+    
+    local switchDot = Instance.new("Frame")
+    switchDot.Size = UDim2.new(0, 18, 0, 18)
+    switchDot.Position = isOn and UDim2.new(0, 23, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
+    switchDot.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    switchDot.BackgroundTransparency = 0
+    switchDot.BorderSizePixel = 0
+    switchDot.Parent = switchBg
+    
+    local dotCorner = Instance.new("UICorner")
+    dotCorner.CornerRadius = UDim.new(1, 0)
+    dotCorner.Parent = switchDot
+    
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 1, 0)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+    btn.Parent = container
+    
+    local currentState = isOn
+    
+    btn.MouseButton1Click:Connect(function()
+        currentState = not currentState
+        local newColor = currentState and Settings.AccentColor or Color3.fromRGB(60, 60, 70)
+        TweenService:Create(switchBg, TweenInfo.new(0.15), {BackgroundColor3 = newColor}):Play()
+        
+        local newPos = currentState and UDim2.new(0, 23, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
+        TweenService:Create(switchDot, TweenInfo.new(0.15), {Position = newPos}):Play()
+        
+        if onChange then
+            onChange(currentState)
+        end
+    end)
+    
+    return {
+        SetState = function(state)
+            currentState = state
+            switchBg.BackgroundColor3 = state and Settings.AccentColor or Color3.fromRGB(60, 60, 70)
+            switchDot.Position = state and UDim2.new(0, 23, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
+        end,
+        GetState = function()
+            return currentState
+        end
+    }
+end
+
+-- Mics UI
+local function CreateMicsUI(container)
+    for _, child in pairs(container:GetChildren()) do
+        child:Destroy()
+    end
+    
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(1, 0, 1, 0)
+    mainFrame.BackgroundTransparency = 1
+    mainFrame.Parent = container
+    
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 40)
+    title.Position = UDim2.new(0, 20, 0, 10)
+    title.BackgroundTransparency = 1
+    title.Text = "Movement Settings"
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.TextSize = 22
+    title.Font = Enum.Font.GothamBold
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = mainFrame
+    
+    local flySwitch = CreateToggleSwitch(mainFrame, 20, 60, "Fly", FlyEnabled, function(state)
+        if state then
+            StartFly()
+            TweenService:Create(speedPanel, TweenInfo.new(0.2), {BackgroundTransparency = 0}):Play()
+            speedPanel.Visible = true
+        else
+            StopFly()
+            TweenService:Create(speedPanel, TweenInfo.new(0.2), {BackgroundTransparency = 1}):Play()
+            task.wait(0.2)
+            speedPanel.Visible = false
+        end
+    end)
+    
+    local speedPanel = Instance.new("Frame")
+    speedPanel.Size = UDim2.new(0, 250, 0, 50)
+    speedPanel.Position = UDim2.new(0, 20, 0, 115)
+    speedPanel.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+    speedPanel.BackgroundTransparency = FlyEnabled and 0 or 1
+    speedPanel.BorderSizePixel = 0
+    speedPanel.Visible = FlyEnabled
+    speedPanel.Parent = mainFrame
+    
+    local panelCorner = Instance.new("UICorner")
+    panelCorner.CornerRadius = UDim.new(0, 8)
+    panelCorner.Parent = speedPanel
+    
+    local speedLabel = Instance.new("TextLabel")
+    speedLabel.Size = UDim2.new(0.4, 0, 1, 0)
+    speedLabel.Position = UDim2.new(0, 10, 0, 0)
+    speedLabel.BackgroundTransparency = 1
+    speedLabel.Text = "Speed:"
+    speedLabel.TextColor3 = Color3.fromRGB(200, 200, 220)
+    speedLabel.TextSize = 14
+    speedLabel.Font = Enum.Font.GothamMedium
+    speedLabel.TextXAlignment = Enum.TextXAlignment.Left
+    speedLabel.Parent = speedPanel
+    
+    local speedValue = Instance.new("TextLabel")
+    speedValue.Size = UDim2.new(0.15, 0, 1, 0)
+    speedValue.Position = UDim2.new(0.45, 0, 0, 0)
+    speedValue.BackgroundTransparency = 1
+    speedValue.Text = tostring(FlySpeed)
+    speedValue.TextColor3 = Color3.fromRGB(255, 200, 100)
+    speedValue.TextSize = 14
+    speedValue.Font = Enum.Font.GothamBold
+    speedValue.Parent = speedPanel
+    
+    local speedMinus = Instance.new("TextButton")
+    speedMinus.Size = UDim2.new(0, 30, 0, 30)
+    speedMinus.Position = UDim2.new(0.65, 0, 0.5, -15)
+    speedMinus.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+    speedMinus.BackgroundTransparency = 0
+    speedMinus.Text = "-"
+    speedMinus.TextColor3 = Color3.fromRGB(255, 255, 255)
+    speedMinus.TextSize = 18
+    speedMinus.Font = Enum.Font.GothamBold
+    speedMinus.BorderSizePixel = 0
+    speedMinus.Parent = speedPanel
+    
+    local minusCorner = Instance.new("UICorner")
+    minusCorner.CornerRadius = UDim.new(0, 6)
+    minusCorner.Parent = speedMinus
+    
+    local speedPlus = Instance.new("TextButton")
+    speedPlus.Size = UDim2.new(0, 30, 0, 30)
+    speedPlus.Position = UDim2.new(0.8, 0, 0.5, -15)
+    speedPlus.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+    speedPlus.BackgroundTransparency = 0
+    speedPlus.Text = "+"
+    speedPlus.TextColor3 = Color3.fromRGB(255, 255, 255)
+    speedPlus.TextSize = 18
+    speedPlus.Font = Enum.Font.GothamBold
+    speedPlus.BorderSizePixel = 0
+    speedPlus.Parent = speedPanel
+    
+    local plusCorner = Instance.new("UICorner")
+    plusCorner.CornerRadius = UDim.new(0, 6)
+    plusCorner.Parent = speedPlus
+    
+    speedMinus.MouseButton1Click:Connect(function()
+        if FlySpeed > 10 then
+            FlySpeed = FlySpeed - 5
+            speedValue.Text = tostring(FlySpeed)
+        end
+    end)
+    
+    speedPlus.MouseButton1Click:Connect(function()
+        if FlySpeed < 200 then
+            FlySpeed = FlySpeed + 5
+            speedValue.Text = tostring(FlySpeed)
+        end
+    end)
+    
+    local noClipSwitch = CreateToggleSwitch(mainFrame, 20, 180, "NoClip", NoClipEnabled, function(state)
+        if state then
+            StartNoClip()
+        else
+            StopNoClip()
+        end
+    end)
+end
+
+-- Visuals UI
+local function CreateVisualsUI(container)
+    for _, child in pairs(container:GetChildren()) do
+        child:Destroy()
+    end
+    
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(1, 0, 1, 0)
+    mainFrame.BackgroundTransparency = 1
+    mainFrame.Parent = container
+    
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 40)
+    title.Position = UDim2.new(0, 20, 0, 10)
+    title.BackgroundTransparency = 1
+    title.Text = "ESP Settings"
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.TextSize = 22
+    title.Font = Enum.Font.GothamBold
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = mainFrame
+    
+    local espSwitch = CreateToggleSwitch(mainFrame, 20, 55, "ESP", ESPEnabled, function(state)
+        if state then
+            EnableESP()
+            TweenService:Create(settingsPanel, TweenInfo.new(0.2), {BackgroundTransparency = 0}):Play()
+            settingsPanel.Visible = true
+        else
+            DisableESP()
+            TweenService:Create(settingsPanel, TweenInfo.new(0.2), {BackgroundTransparency = 1}):Play()
+            task.wait(0.2)
+            settingsPanel.Visible = false
+        end
+    end)
+    
+    local settingsPanel = Instance.new("Frame")
+    settingsPanel.Size = UDim2.new(0, 350, 0, 140)
+    settingsPanel.Position = UDim2.new(0, 20, 0, 105)
+    settingsPanel.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+    settingsPanel.BackgroundTransparency = ESPEnabled and 0 or 1
+    settingsPanel.BorderSizePixel = 0
+    settingsPanel.Visible = ESPEnabled
+    settingsPanel.Parent = mainFrame
+    
+    local panelCorner = Instance.new("UICorner")
+    panelCorner.CornerRadius = UDim.new(0, 8)
+    panelCorner.Parent = settingsPanel
+    
+    local colorContainer = Instance.new("Frame")
+    colorContainer.Size = UDim2.new(1, 0, 0, 40)
+    colorContainer.Position = UDim2.new(0, 10, 0, 10)
+    colorContainer.BackgroundTransparency = 1
+    colorContainer.Parent = settingsPanel
+    
+    local colorLabel = Instance.new("TextLabel")
+    colorLabel.Size = UDim2.new(0.3, 0, 1, 0)
+    colorLabel.BackgroundTransparency = 1
+    colorLabel.Text = "Color:"
+    colorLabel.TextColor3 = Color3.fromRGB(200, 200, 220)
+    colorLabel.TextSize = 14
+    colorLabel.Font = Enum.Font.GothamMedium
+    colorLabel.TextXAlignment = Enum.TextXAlignment.Left
+    colorLabel.Parent = colorContainer
+    
+    local colorButtons = Instance.new("Frame")
+    colorButtons.Size = UDim2.new(0.65, 0, 1, 0)
+    colorButtons.Position = UDim2.new(0.35, 0, 0, 0)
+    colorButtons.BackgroundTransparency = 1
+    colorButtons.Parent = colorContainer
+    
+    local colorPresets = {
+        Color3.fromRGB(255, 50, 50),
+        Color3.fromRGB(50, 255, 50),
+        Color3.fromRGB(50, 50, 255),
+        Color3.fromRGB(255, 255, 50),
+        Color3.fromRGB(255, 50, 255),
+        Color3.fromRGB(50, 255, 255)
+    }
+    
+    for i, color in ipairs(colorPresets) do
+        local colorBtn = Instance.new("TextButton")
+        colorBtn.Size = UDim2.new(0, 25, 0, 25)
+        colorBtn.Position = UDim2.new(0, (i-1) * 30, 0.5, -12.5)
+        colorBtn.BackgroundColor3 = color
+        colorBtn.BackgroundTransparency = 0
+        colorBtn.Text = ""
+        colorBtn.BorderSizePixel = 0
+        colorBtn.Parent = colorButtons
+        
+        local btnCorner = Instance.new("UICorner")
+        btnCorner.CornerRadius = UDim.new(1, 0)
+        btnCorner.Parent = colorBtn
+        
+        colorBtn.MouseButton1Click:Connect(function()
+            ESPColor = color
+            UpdateESPColor()
+            ShowNotification("ESP Color changed")
+        end)
+    end
+    
+    local accentFrame = Instance.new("Frame")
+    accentFrame.Size = UDim2.new(1, 0, 0, 30)
+    accentFrame.Position = UDim2.new(0, 10, 0, 55)
+    accentFrame.BackgroundTransparency = 1
+    accentFrame.Parent = settingsPanel
+    
+    local accentLabel = Instance.new("TextLabel")
+    accentLabel.Size = UDim2.new(0.5, 0, 1, 0)
+    accentLabel.BackgroundTransparency = 1
+    accentLabel.Text = "Use Accent Color"
+    accentLabel.TextColor3 = Color3.fromRGB(200, 200, 220)
+    accentLabel.TextSize = 13
+    accentLabel.Font = Enum.Font.GothamMedium
+    accentLabel.TextXAlignment = Enum.TextXAlignment.Left
+    accentLabel.Parent = accentFrame
+    
+    local accentCheck = Instance.new("Frame")
+    accentCheck.Size = UDim2.new(0, 18, 0, 18)
+    accentCheck.Position = UDim2.new(0.6, 0, 0.5, -9)
+    accentCheck.BackgroundColor3 = UseAccentColor and Settings.AccentColor or Color3.fromRGB(40, 40, 50)
+    accentCheck.BackgroundTransparency = 0
+    accentCheck.BorderSizePixel = 2
+    accentCheck.BorderColor3 = Color3.fromRGB(80, 80, 90)
+    accentCheck.Parent = accentFrame
+    
+    local checkCorner = Instance.new("UICorner")
+    checkCorner.CornerRadius = UDim.new(0, 4)
+    checkCorner.Parent = accentCheck
+    
+    local checkMark = Instance.new("TextLabel")
+    checkMark.Size = UDim2.new(1, 0, 1, 0)
+    checkMark.BackgroundTransparency = 1
+    checkMark.Text = UseAccentColor and "X" or ""
+    checkMark.TextColor3 = Color3.fromRGB(255, 255, 255)
+    checkMark.TextSize = 12
+    checkMark.Font = Enum.Font.GothamBold
+    checkMark.Parent = accentCheck
+    
+    local accentBtn = Instance.new("TextButton")
+    accentBtn.Size = UDim2.new(1, 0, 1, 0)
+    accentBtn.BackgroundTransparency = 1
+    accentBtn.Text = ""
+    accentBtn.Parent = accentFrame
+    
+    accentBtn.MouseButton1Click:Connect(function()
+        UseAccentColor = not UseAccentColor
+        checkMark.Text = UseAccentColor and "X" or ""
+        accentCheck.BackgroundColor3 = UseAccentColor and Settings.AccentColor or Color3.fromRGB(40, 40, 50)
+        if UseAccentColor then
+            ESPColor = Settings.AccentColor
+            UpdateESPColor()
+        end
+    end)
+end
+
+-- Tools UI
+local function CreateToolsUI(container)
+    for _, child in pairs(container:GetChildren()) do
+        child:Destroy()
+    end
+    
+    local tileContainer = Instance.new("Frame")
+    tileContainer.Size = UDim2.new(1, 0, 1, 0)
+    tileContainer.BackgroundTransparency = 1
+    tileContainer.Parent = container
+    
+    local jerkTile = Instance.new("TextButton")
+    jerkTile.Size = UDim2.new(0, 150, 0, 80)
+    jerkTile.Position = UDim2.new(0, 20, 0, 20)
+    jerkTile.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    jerkTile.BackgroundTransparency = 0
+    jerkTile.Text = "Jerk Off"
+    jerkTile.TextColor3 = Color3.fromRGB(200, 200, 220)
+    jerkTile.TextSize = 18
+    jerkTile.Font = Enum.Font.GothamBold
+    jerkTile.BorderSizePixel = 0
+    jerkTile.Parent = tileContainer
+    
+    local tileCorner = Instance.new("UICorner")
+    tileCorner.CornerRadius = UDim.new(0, 10)
+    tileCorner.Parent = jerkTile
+    
+    local statusText = Instance.new("TextLabel")
+    statusText.Size = UDim2.new(1, 0, 0, 20)
+    statusText.Position = UDim2.new(0, 0, 0.65, 0)
+    statusText.BackgroundTransparency = 1
+    statusText.Text = "OFF"
+    statusText.TextColor3 = Color3.fromRGB(200, 80, 80)
+    statusText.TextSize = 12
+    statusText.Font = Enum.Font.GothamBold
+    statusText.Parent = jerkTile
+    
+    AddConnection(jerkTile.MouseEnter:Connect(function()
+        if not JerkOffActive then
+            TweenService:Create(jerkTile, TweenInfo.new(0.15), {
+                BackgroundColor3 = Color3.fromRGB(45, 45, 60)
+            }):Play()
+            TweenService:Create(jerkTile, TweenInfo.new(0.15), {
+                Size = UDim2.new(0, 160, 0, 85)
+            }):Play()
+            TweenService:Create(jerkTile, TweenInfo.new(0.15), {
+                Position = UDim2.new(0, 15, 0, 17)
+            }):Play()
+        end
+    end))
+    
+    AddConnection(jerkTile.MouseLeave:Connect(function()
+        if not JerkOffActive then
+            TweenService:Create(jerkTile, TweenInfo.new(0.15), {
+                BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+            }):Play()
+            TweenService:Create(jerkTile, TweenInfo.new(0.15), {
+                Size = UDim2.new(0, 150, 0, 80)
+            }):Play()
+            TweenService:Create(jerkTile, TweenInfo.new(0.15), {
+                Position = UDim2.new(0, 20, 0, 20)
+            }):Play()
+        end
+    end))
+    
+    AddConnection(jerkTile.MouseButton1Click:Connect(function()
+        if JerkOffActive then
+            StopJerkOff()
+            
+            TweenService:Create(jerkTile, TweenInfo.new(0.2), {
+                BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+            }):Play()
+            TweenService:Create(jerkTile, TweenInfo.new(0.2), {
+                Size = UDim2.new(0, 150, 0, 80)
+            }):Play()
+            TweenService:Create(jerkTile, TweenInfo.new(0.2), {
+                Position = UDim2.new(0, 20, 0, 20)
+            }):Play()
+            
+            statusText.Text = "OFF"
+            statusText.TextColor3 = Color3.fromRGB(200, 80, 80)
+        else
+            JerkOffActive = true
+            
+            TweenService:Create(jerkTile, TweenInfo.new(0.2), {
+                BackgroundColor3 = Settings.AccentColor
+            }):Play()
+            TweenService:Create(jerkTile, TweenInfo.new(0.2), {
+                Size = UDim2.new(0, 165, 0, 90)
+            }):Play()
+            TweenService:Create(jerkTile, TweenInfo.new(0.2), {
+                Position = UDim2.new(0, 12, 0, 15)
+            }):Play()
+            
+            statusText.Text = "ON"
+            statusText.TextColor3 = Color3.fromRGB(100, 255, 100)
+            
+            if JerkOffCoroutine then
+                task.cancel(JerkOffCoroutine)
+            end
+            JerkOffCoroutine = task.spawn(JerkOffFunction)
+            
+            ShowNotification("Jerk Off started")
+        end
+    end))
+end
+
+-- Animation UI
+local function CreateAnimationUI(container)
+    for _, child in pairs(container:GetChildren()) do
+        child:Destroy()
+    end
+    
+    local placeholder = Instance.new("TextLabel")
+    placeholder.Size = UDim2.new(1, 0, 1, 0)
+    placeholder.BackgroundTransparency = 1
+    placeholder.Text = "Animation tab is empty"
+    placeholder.TextColor3 = Color3.fromRGB(150, 150, 170)
+    placeholder.TextSize = 20
+    placeholder.Font = Enum.Font.GothamMedium
+    placeholder.TextWrapped = true
+    placeholder.Parent = container
+end
+
+-- Settings UI
+local function CreateSettingsUI(container)
+    for _, child in pairs(container:GetChildren()) do
+        child:Destroy()
+    end
+    
+    local scrollFrame = Instance.new("ScrollingFrame")
+    scrollFrame.Size = UDim2.new(1, 0, 1, 0)
+    scrollFrame.BackgroundTransparency = 1
+    scrollFrame.ScrollBarThickness = 6
+    scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(50, 50, 60)
+    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 320)
+    scrollFrame.Parent = container
+    
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 15)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = scrollFrame
+    
+    local padding = Instance.new("UIPadding")
+    padding.PaddingLeft = UDim.new(0, 20)
+    padding.PaddingRight = UDim.new(0, 20)
+    padding.PaddingTop = UDim.new(0, 20)
+    padding.Parent = scrollFrame
+    
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(1, 0, 0, 40)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = "SETTINGS"
+    titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    titleLabel.TextSize = 24
+    titleLabel.Font = Enum.Font.GothamBold
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.LayoutOrder = 0
+    titleLabel.Parent = scrollFrame
+    
+    local accentSection = Instance.new("Frame")
+    accentSection.Size = UDim2.new(1, 0, 0, 140)
+    accentSection.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+    accentSection.BackgroundTransparency = 0
+    accentSection.BorderSizePixel = 0
+    accentSection.LayoutOrder = 1
+    accentSection.Parent = scrollFrame
+    
+    local accentCorner = Instance.new("UICorner")
+    accentCorner.CornerRadius = UDim.new(0, 8)
+    accentCorner.Parent = accentSection
+    
+    local accentTitle = Instance.new("TextLabel")
+    accentTitle.Size = UDim2.new(1, -20, 0, 30)
+    accentTitle.Position = UDim2.new(0, 10, 0, 5)
+    accentTitle.BackgroundTransparency = 1
+    accentTitle.Text = "Button Accent Color"
+    accentTitle.TextColor3 = Color3.fromRGB(200, 200, 220)
+    accentTitle.TextSize = 16
+    accentTitle.Font = Enum.Font.GothamMedium
+    accentTitle.TextXAlignment = Enum.TextXAlignment.Left
+    accentTitle.Parent = accentSection
+    
+    local colorContainer = Instance.new("Frame")
+    colorContainer.Size = UDim2.new(1, 0, 0, 70)
+    colorContainer.Position = UDim2.new(0, 10, 0, 45)
+    colorContainer.BackgroundTransparency = 1
+    colorContainer.Parent = accentSection
+    
+    local colors = {
+        {Name = "Purple", Color = Color3.fromRGB(120, 80, 200)},
+        {Name = "Blue", Color = Color3.fromRGB(70, 100, 200)},
+        {Name = "Green", Color = Color3.fromRGB(60, 160, 100)},
+        {Name = "Red", Color = Color3.fromRGB(200, 70, 70)},
+        {Name = "Orange", Color = Color3.fromRGB(220, 120, 50)},
+        {Name = "Cyan", Color = Color3.fromRGB(50, 180, 200)}
+    }
+    
+    for i, colorData in ipairs(colors) do
+        local colorBtn = Instance.new("TextButton")
+        colorBtn.Size = UDim2.new(0, 45, 0, 45)
+        colorBtn.Position = UDim2.new(0, (i-1) * 55, 0, 0)
+        colorBtn.BackgroundColor3 = colorData.Color
+        colorBtn.BackgroundTransparency = 0
+        colorBtn.Text = ""
+        colorBtn.BorderSizePixel = 0
+        colorBtn.Parent = colorContainer
+        
+        local colorCorner = Instance.new("UICorner")
+        colorCorner.CornerRadius = UDim.new(1, 0)
+        colorCorner.Parent = colorBtn
+        
+        local outline = Instance.new("Frame")
+        outline.Size = UDim2.new(1, 0, 1, 0)
+        outline.BackgroundTransparency = 1
+        outline.BorderSizePixel = 2
+        outline.BorderColor3 = Color3.fromRGB(255, 255, 255)
+        outline.Visible = (Settings.AccentColor == colorData.Color)
+        outline.Parent = colorBtn
+        
+        local outlineCorner = Instance.new("UICorner")
+        outlineCorner.CornerRadius = UDim.new(1, 0)
+        outlineCorner.Parent = outline
+        
+        AddConnection(colorBtn.MouseButton1Click:Connect(function()
+            Settings.AccentColor = colorData.Color
+            Settings.AccentHoverColor = Color3.fromRGB(
+                math.min(1, colorData.Color.R * 1.2),
+                math.min(1, colorData.Color.G * 1.2),
+                math.min(1, colorData.Color.B * 1.2)
+            )
+            
+            for _, btn in pairs(colorContainer:GetChildren()) do
+                if btn:IsA("TextButton") then
+                    local ol = btn:FindFirstChild("Frame")
+                    if ol then
+                        ol.Visible = (btn.BackgroundColor3 == Settings.AccentColor)
+                    end
+                end
+            end
+            
+            if UseAccentColor and ESPEnabled then
+                ESPColor = Settings.AccentColor
+                UpdateESPColor()
+            end
+            
+            UpdateAccentColors()
+            ShowNotification("Accent: " .. colorData.Name)
+        end))
+        
+        AddConnection(colorBtn.MouseEnter:Connect(function()
+            TweenService:Create(colorBtn, TweenInfo.new(0.1), {Size = UDim2.new(0, 50, 0, 50)}):Play()
+        end))
+        
+        AddConnection(colorBtn.MouseLeave:Connect(function()
+            TweenService:Create(colorBtn, TweenInfo.new(0.1), {Size = UDim2.new(0, 45, 0, 45)}):Play()
+        end))
+    end
+    
+    local unloadSection = Instance.new("Frame")
+    unloadSection.Size = UDim2.new(1, 0, 0, 110)
+    unloadSection.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+    unloadSection.BackgroundTransparency = 0
+    unloadSection.BorderSizePixel = 0
+    unloadSection.LayoutOrder = 2
+    unloadSection.Parent = scrollFrame
+    
+    local unloadCorner = Instance.new("UICorner")
+    unloadCorner.CornerRadius = UDim.new(0, 8)
+    unloadCorner.Parent = unloadSection
+    
+    local unloadTitle = Instance.new("TextLabel")
+    unloadTitle.Size = UDim2.new(1, -20, 0, 30)
+    unloadTitle.Position = UDim2.new(0, 10, 0, 5)
+    unloadTitle.BackgroundTransparency = 1
+    unloadTitle.Text = "Script Control"
+    unloadTitle.TextColor3 = Color3.fromRGB(200, 200, 220)
+    unloadTitle.TextSize = 16
+    unloadTitle.Font = Enum.Font.GothamMedium
+    unloadTitle.TextXAlignment = Enum.TextXAlignment.Left
+    unloadTitle.Parent = unloadSection
+    
+    local unloadBtn = Instance.new("TextButton")
+    unloadBtn.Size = UDim2.new(0.6, 0, 0, 45)
+    unloadBtn.Position = UDim2.new(0.2, 0, 0, 50)
+    unloadBtn.BackgroundColor3 = Color3.fromRGB(180, 60, 60)
+    unloadBtn.BackgroundTransparency = 0
+    unloadBtn.Text = "UNLOAD SCRIPT"
+    unloadBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    unloadBtn.TextSize = 15
+    unloadBtn.Font = Enum.Font.GothamBold
+    unloadBtn.BorderSizePixel = 0
+    unloadBtn.Parent = unloadSection
+    
+    local unloadBtnCorner = Instance.new("UICorner")
+    unloadBtnCorner.CornerRadius = UDim.new(0, 8)
+    unloadBtnCorner.Parent = unloadBtn
+    
+    AddConnection(unloadBtn.MouseEnter:Connect(function()
+        TweenService:Create(unloadBtn, TweenInfo.new(0.15), {
+            BackgroundColor3 = Color3.fromRGB(220, 70, 70),
+            Size = UDim2.new(0.65, 0, 0, 50)
+        }):Play()
+        TweenService:Create(unloadBtn, TweenInfo.new(0.15), {
+            Position = UDim2.new(0.175, 0, 0, 47)
+        }):Play()
+    end))
+    
+    AddConnection(unloadBtn.MouseLeave:Connect(function()
+        TweenService:Create(unloadBtn, TweenInfo.new(0.15), {
+            BackgroundColor3 = Color3.fromRGB(180, 60, 60),
+            Size = UDim2.new(0.6, 0, 0, 45)
+        }):Play()
+        TweenService:Create(unloadBtn, TweenInfo.new(0.15), {
+            Position = UDim2.new(0.2, 0, 0, 50)
+        }):Play()
+    end))
+    
+    AddConnection(unloadBtn.MouseButton1Click:Connect(function()
+        if JerkOffActive then
+            StopJerkOff()
+        end
+        if ESPEnabled then
+            DisableESP()
+        end
+        if FlyEnabled then
+            StopFly()
+        end
+        if NoClipEnabled then
+            StopNoClip()
+        end
+        FullUnload()
+    end))
+    
+    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 310)
+end
+
+-- FULL UNLOAD
+local function FullUnload()
+    if IsUnloading then return end
+    IsUnloading = true
+    
+    if JerkOffActive then
+        StopJerkOff()
+    end
+    if ESPEnabled then
+        DisableESP()
+    end
+    if FlyEnabled then
+        StopFly()
+    end
+    if NoClipEnabled then
+        StopNoClip()
+    end
+    
+    for _, conn in ipairs(Connections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    Connections = {}
+    
+    for _, conn in ipairs(RenderConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    RenderConnections = {}
+    
+    if MainFrame then
+        TweenService:Create(MainFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            BackgroundTransparency = 1
+        }):Play()
+        
+        TweenService:Create(MainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
+            Size = UDim2.new(0, 0, 0, 0),
+            Position = UDim2.new(0.5, 0, 0.5, 0)
+        }):Play()
+    end
+    
+    if ScreenGui then
+        local unloadNotif = Instance.new("Frame")
+        unloadNotif.Size = UDim2.new(0, 300, 0, 60)
+        unloadNotif.Position = UDim2.new(0.5, -150, 0.5, -30)
+        unloadNotif.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+        unloadNotif.BackgroundTransparency = 0
+        unloadNotif.BorderSizePixel = 0
+        unloadNotif.ZIndex = 999
+        unloadNotif.Parent = ScreenGui
+        
+        local notifCorner = Instance.new("UICorner")
+        notifCorner.CornerRadius = UDim.new(0, 12)
+        notifCorner.Parent = unloadNotif
+        
+        local unloadText = Instance.new("TextLabel")
+        unloadText.Size = UDim2.new(1, 0, 1, 0)
+        unloadText.BackgroundTransparency = 1
+        unloadText.Text = "UNLOADED"
+        unloadText.TextColor3 = Color3.fromRGB(100, 255, 100)
+        unloadText.TextSize = 24
+        unloadText.Font = Enum.Font.GothamBold
+        unloadText.Parent = unloadNotif
+        
+        task.wait(0.5)
+        
+        TweenService:Create(unloadNotif, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            BackgroundTransparency = 1
+        }):Play()
+        
+        task.wait(0.2)
+        unloadNotif:Destroy()
+    end
+    
+    task.wait(0.2)
+    
+    if ScreenGui then
+        pcall(function() ScreenGui:Destroy() end)
+    end
+    
+    ScreenGui = nil
+    MainFrame = nil
+    LeftPanel = nil
+    RightPanel = nil
+    TabButtons = nil
+    CurrentTab = nil
+    Settings = nil
+    Connections = nil
+    RenderConnections = nil
+    ESPHighlights = nil
+    ESPConnections = nil
+    ESPPlayerConnections = nil
+    
+    collectgarbage()
+    
+    while true do
+        task.wait(999999)
+    end
+end
+
+local function UpdateTitleBarButtons(isMinimized)
+    local titleBar = MainFrame and MainFrame:FindFirstChild("TitleBar")
+    if not titleBar then return end
+    
+    local minBtn = titleBar:FindFirstChild("MinimizeButton")
+    local restoreBtn = titleBar:FindFirstChild("RestoreButton")
+    
+    if isMinimized then
+        if minBtn then minBtn.Visible = false end
+        if not restoreBtn then
+            local newRestoreBtn = Instance.new("TextButton")
+            newRestoreBtn.Name = "RestoreButton"
+            newRestoreBtn.Size = UDim2.new(0, 35, 0, 30)
+            newRestoreBtn.Position = UDim2.new(1, -85, 0, 5)
+            newRestoreBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+            newRestoreBtn.BackgroundTransparency = 0
+            newRestoreBtn.Text = "□"
+            newRestoreBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            newRestoreBtn.TextSize = 18
+            newRestoreBtn.Font = Enum.Font.GothamBold
+            newRestoreBtn.BorderSizePixel = 0
+            newRestoreBtn.Parent = titleBar
+            
+            local btnCorner = Instance.new("UICorner")
+            btnCorner.CornerRadius = UDim.new(0, 6)
+            btnCorner.Parent = newRestoreBtn
+            
+            AddConnection(newRestoreBtn.MouseButton1Click:Connect(function()
+                RestoreWindow()
+            end))
+        end
+    else
+        if restoreBtn then 
+            restoreBtn:Destroy() 
+        end
+        if minBtn then 
+            minBtn.Visible = true 
+        end
+    end
+end
+
+local function MinimizeWindow()
+    if IsMinimized or IsClosing or IsUnloading then return end
+    
+    IsMinimized = true
+    
+    OriginalSize = MainFrame.Size
+    OriginalPosition = MainFrame.Position
+    
+    local targetPos = UDim2.new(OriginalPosition.X.Scale, OriginalPosition.X.Offset, 0, 0)
+    
+    TweenService:Create(MainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+        Size = UDim2.new(OriginalSize.X.Scale, OriginalSize.X.Offset, 0, 40),
+        Position = targetPos
+    }):Play()
+    
+    task.wait(0.25)
+    
+    if LeftPanel then LeftPanel.Visible = false end
+    if RightPanel then RightPanel.Visible = false end
+    
+    local titleBar = MainFrame:FindFirstChild("TitleBar")
+    if titleBar then
+        local titleText = titleBar:FindFirstChildOfClass("TextLabel")
+        if titleText then
+            titleText.Text = "PidofillHub [Minimized]"
+        end
+    end
+    
+    UpdateTitleBarButtons(true)
+end
+
+local function RestoreWindow()
+    if not IsMinimized or IsClosing or IsUnloading then return end
+    
+    IsMinimized = false
+    
+    if LeftPanel then LeftPanel.Visible = true end
+    if RightPanel then RightPanel.Visible = true end
+    
+    TweenService:Create(MainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = OriginalSize,
+        Position = OriginalPosition
+    }):Play()
+    
+    local titleBar = MainFrame:FindFirstChild("TitleBar")
+    if titleBar then
+        local titleText = titleBar:FindFirstChildOfClass("TextLabel")
+        if titleText then
+            titleText.Text = "PidofillHub"
+        end
+    end
+    
+    UpdateTitleBarButtons(false)
+end
+
+local function CloseWindowWithAnimation()
+    if IsClosing or IsUnloading then return end
+    IsClosing = true
+    
+    TweenService:Create(MainFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(0, 0, 0, 0),
+        Position = UDim2.new(0.5, 0, 0.5, 0)
+    }):Play()
+    
+    task.wait(0.2)
+    
+    ShowNotification("PidofillHub is active! Press Ins to open again")
+    if MainFrame then MainFrame.Visible = false end
+    IsClosing = false
+end
+
+local function CreateUI()
+    ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "PidofillHub"
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    ScreenGui.Parent = CoreGui
+    
+    MainFrame = Instance.new("Frame")
+    MainFrame.Name = "MainFrame"
+    MainFrame.Size = UDim2.new(0, 800, 0, 500)
+    MainFrame.Position = UDim2.new(0.5, -400, 0.5, -250)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+    MainFrame.BackgroundTransparency = 0
+    MainFrame.BorderSizePixel = 0
+    MainFrame.ClipsDescendants = true
+    MainFrame.Visible = true
+    MainFrame.Parent = ScreenGui
+    
+    local UICornerMain = Instance.new("UICorner")
+    UICornerMain.CornerRadius = UDim.new(0, 12)
+    UICornerMain.Parent = MainFrame
+    
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Name = "TitleBar"
+    TitleBar.Size = UDim2.new(1, 0, 0, 40)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Parent = MainFrame
+    
+    local TitleCorner = Instance.new("UICorner")
+    TitleCorner.CornerRadius = UDim.new(0, 12)
+    TitleCorner.Parent = TitleBar
+    
+    local TitleText = Instance.new("TextLabel")
+    TitleText.Size = UDim2.new(1, -180, 1, 0)
+    TitleText.Position = UDim2.new(0, 15, 0, 0)
+    TitleText.BackgroundTransparency = 1
+    TitleText.Text = "PidofillHub"
+    TitleText.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TitleText.TextSize = 18
+    TitleText.Font = Enum.Font.GothamSemibold
+    TitleText.TextXAlignment = Enum.TextXAlignment.Left
+    TitleText.Parent = TitleBar
+    
+    local MinBtn = Instance.new("TextButton")
+    MinBtn.Name = "MinimizeButton"
+    MinBtn.Size = UDim2.new(0, 35, 0, 30)
+    MinBtn.Position = UDim2.new(1, -85, 0, 5)
+    MinBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+    MinBtn.BackgroundTransparency = 0
+    MinBtn.Text = "-"
+    MinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    MinBtn.TextSize = 20
+    MinBtn.Font = Enum.Font.GothamBold
+    MinBtn.BorderSizePixel = 0
+    MinBtn.Parent = TitleBar
+    
+    local MinCorner = Instance.new("UICorner")
+    MinCorner.CornerRadius = UDim.new(0, 6)
+    MinCorner.Parent = MinBtn
+    
+    AddConnection(MinBtn.MouseButton1Click:Connect(function()
+        MinimizeWindow()
+    end))
+    
+    local CloseBtn = Instance.new("TextButton")
+    CloseBtn.Name = "CloseButton"
+    CloseBtn.Size = UDim2.new(0, 35, 0, 30)
+    CloseBtn.Position = UDim2.new(1, -45, 0, 5)
+    CloseBtn.BackgroundColor3 = Color3.fromRGB(60, 50, 55)
+    CloseBtn.BackgroundTransparency = 0
+    CloseBtn.Text = "X"
+    CloseBtn.TextColor3 = Color3.fromRGB(255, 200, 200)
+    CloseBtn.TextSize = 16
+    CloseBtn.Font = Enum.Font.GothamBold
+    CloseBtn.BorderSizePixel = 0
+    CloseBtn.Parent = TitleBar
+    
+    local CloseCorner = Instance.new("UICorner")
+    CloseCorner.CornerRadius = UDim.new(0, 6)
+    CloseCorner.Parent = CloseBtn
+    
+    AddConnection(CloseBtn.MouseButton1Click:Connect(function()
+        if IsMinimized then
+            IsMinimized = false
+            if LeftPanel then LeftPanel.Visible = true end
+            if RightPanel then RightPanel.Visible = true end
+            UpdateTitleBarButtons(false)
+            
+            local titleBar = MainFrame:FindFirstChild("TitleBar")
+            if titleBar then
+                local titleText = titleBar:FindFirstChildOfClass("TextLabel")
+                if titleText then
+                    titleText.Text = "PidofillHub"
+                end
+            end
+            
+            MainFrame.Size = OriginalSize
+            MainFrame.Position = OriginalPosition
+        end
+        
+        CloseWindowWithAnimation()
+    end))
+    
+    LeftPanel = Instance.new("Frame")
+    LeftPanel.Name = "LeftPanel"
+    LeftPanel.Size = UDim2.new(0, 200, 1, -40)
+    LeftPanel.Position = UDim2.new(0, 0, 0, 40)
+    LeftPanel.BackgroundColor3 = Color3.fromRGB(22, 22, 27)
+    LeftPanel.BorderSizePixel = 0
+    LeftPanel.Parent = MainFrame
+    
+    local ButtonsContainer = Instance.new("Frame")
+    ButtonsContainer.Name = "ButtonsContainer"
+    ButtonsContainer.Size = UDim2.new(1, 0, 0, 400)
+    ButtonsContainer.Position = UDim2.new(0, 0, 0, 20)
+    ButtonsContainer.BackgroundTransparency = 1
+    ButtonsContainer.Parent = LeftPanel
+    
+    TabButtons = {}
+    
+    for i, section in ipairs(Sections) do
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, -20, 0, 48)
+        btn.Position = UDim2.new(0, 10, 0, (i-1) * 56)
+        btn.BackgroundColor3 = Color3.fromRGB(28, 28, 33)
+        btn.BackgroundTransparency = 0
+        btn.Text = "   " .. section
+        btn.TextColor3 = Color3.fromRGB(200, 200, 210)
+        btn.TextSize = 15
+        btn.TextXAlignment = Enum.TextXAlignment.Left
+        btn.Font = Enum.Font.GothamMedium
+        btn.BorderSizePixel = 0
+        btn.Parent = ButtonsContainer
+        
+        local btnCorner = Instance.new("UICorner")
+        btnCorner.CornerRadius = UDim.new(0, 8)
+        btnCorner.Parent = btn
+        
+        AddConnection(btn.MouseEnter:Connect(function()
+            if CurrentTab ~= section then
+                TweenService:Create(btn, TweenInfo.new(ANIMATION_SPEED, TWEEN_STYLE, TWEEN_DIR), {BackgroundColor3 = Settings.AccentHoverColor}):Play()
+            end
+        end))
+        
+        AddConnection(btn.MouseLeave:Connect(function()
+            if CurrentTab ~= section then
+                TweenService:Create(btn, TweenInfo.new(ANIMATION_SPEED, TWEEN_STYLE, TWEEN_DIR), {BackgroundColor3 = Color3.fromRGB(28, 28, 33)}):Play()
+            end
+        end))
+        
+        TabButtons[section] = btn
+    end
+    
+    RightPanel = Instance.new("Frame")
+    RightPanel.Name = "RightPanel"
+    RightPanel.Size = UDim2.new(1, -200, 1, -40)
+    RightPanel.Position = UDim2.new(0, 200, 0, 40)
+    RightPanel.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+    RightPanel.BorderSizePixel = 0
+    RightPanel.Parent = MainFrame
+    
+    local RightCorner = Instance.new("UICorner")
+    RightCorner.CornerRadius = UDim.new(0, 12)
+    RightCorner.Parent = RightPanel
+    
+    local ContentContainers = {}
+    
+    for _, section in ipairs(Sections) do
+        local container = Instance.new("Frame")
+        container.Name = section .. "Content"
+        container.Size = UDim2.new(1, -30, 1, -30)
+        container.Position = UDim2.new(0, 15, 0, 15)
+        container.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
+        container.BackgroundTransparency = 0
+        container.BorderSizePixel = 0
+        container.Visible = false
+        container.Parent = RightPanel
+        
+        local containerCorner = Instance.new("UICorner")
+        containerCorner.CornerRadius = UDim.new(0, 10)
+        containerCorner.Parent = container
+        
+        if section == "Settings" then
+            CreateSettingsUI(container)
+        elseif section == "Animation" then
+            CreateAnimationUI(container)
+        elseif section == "Tools" then
+            CreateToolsUI(container)
+        elseif section == "Visual" then
+            CreateVisualsUI(container)
+        elseif section == "Mics" then
+            CreateMicsUI(container)
+        else
+            local Placeholder = Instance.new("TextLabel")
+            Placeholder.Size = UDim2.new(1, 0, 1, 0)
+            Placeholder.BackgroundTransparency = 1
+            Placeholder.Text = "In the " .. section .. " tab there is nothing xD"
+            Placeholder.TextColor3 = Color3.fromRGB(150, 150, 170)
+            Placeholder.TextSize = 20
+            Placeholder.Font = Enum.Font.GothamMedium
+            Placeholder.TextWrapped = true
+            Placeholder.Parent = container
+        end
+        
+        ContentContainers[section] = container
+    end
+    
+    local dragging = false
+    local dragInput
+    local dragStart
+    local startPos
+    
+    AddConnection(TitleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = MainFrame.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end))
+    
+    AddConnection(TitleBar.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            dragInput = input
+        end
+    end))
+    
+    AddConnection(UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+            if not IsMinimized then
+                OriginalPosition = MainFrame.Position
+            end
+        end
+    end))
+    
+    return ContentContainers
+end
+
+local function SwitchTab(tabName, ContentContainers)
+    if CurrentTab == tabName then return end
+    
+    if CurrentTab ~= "" and ContentContainers[CurrentTab] then
+        local oldContainer = ContentContainers[CurrentTab]
+        TweenService:Create(oldContainer, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {BackgroundTransparency = 1}):Play()
+        oldContainer.Visible = false
+        oldContainer.BackgroundTransparency = 1
+        
+        if TabButtons[CurrentTab] then
+            TweenService:Create(TabButtons[CurrentTab], TweenInfo.new(ANIMATION_SPEED, TWEEN_STYLE, TWEEN_DIR), {BackgroundColor3 = Color3.fromRGB(28, 28, 33)}):Play()
+            TweenService:Create(TabButtons[CurrentTab], TweenInfo.new(ANIMATION_SPEED, TWEEN_STYLE, TWEEN_DIR), {TextColor3 = Color3.fromRGB(200, 200, 210)}):Play()
+        end
+    end
+    
+    local newContainer = ContentContainers[tabName]
+    newContainer.BackgroundTransparency = 1
+    newContainer.Visible = true
+    TweenService:Create(newContainer, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundTransparency = 0}):Play()
+    
+    if TabButtons[tabName] then
+        TweenService:Create(TabButtons[tabName], TweenInfo.new(ANIMATION_SPEED, TWEEN_STYLE, TWEEN_DIR), {BackgroundColor3 = Settings.AccentColor}):Play()
+        TweenService:Create(TabButtons[tabName], TweenInfo.new(ANIMATION_SPEED, TWEEN_STYLE, TWEEN_DIR), {TextColor3 = Color3.fromRGB(255, 255, 255)}):Play()
+    end
+    
+    CurrentTab = tabName
+end
+
+local function Initialize()
+    local ContentContainers = CreateUI()
+    
+    for section, btn in pairs(TabButtons) do
+        AddConnection(btn.MouseButton1Click:Connect(function()
+            if not IsMinimized then
+                SwitchTab(section, ContentContainers)
+            end
+        end))
+    end
+    
+    SwitchTab(Sections[1], ContentContainers)
+    
+    AddConnection(UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed then return end
+        if input.KeyCode == Enum.KeyCode.Insert then
+            if MainFrame and MainFrame.Visible and not IsUnloading then
+                CloseWindowWithAnimation()
+            elseif MainFrame and not IsUnloading then
+                MainFrame.Visible = true
+                MainFrame.BackgroundTransparency = 0
+                MainFrame.Size = OriginalSize
+                MainFrame.Position = OriginalPosition
+                if IsMinimized then
+                    RestoreWindow()
+                end
+                ShowNotification("PidofillHub opened")
+            end
+        end
+    end))
+end
+
+Initialize()
+
+return PidofillHub
